@@ -1,0 +1,187 @@
+library(caret)
+library(MASS)
+library(e1071)
+library(psych)
+library(corrplot)
+
+#library(car)
+#scatterplotMatrix(ischemic)
+
+#Loading the data set
+ischemic<- read.csv("test_2v.csv")
+str(ischemic)
+
+###########################  DATA PREPARATION PHASE  ###########################
+#Eliminating unique id
+ischemic$id <- NULL
+
+#Converting integer values to factor
+ischemic[,3:4] <- as.factor(ischemic[,3:4])
+ischemic$hypertension <- as.factor(ischemic$hypertension)
+ischemic$heart_disease <- as.factor(ischemic$heart_disease)
+
+#converting the stroke predictor to factor (yes,no). Otherwise, it will show variable.1, such as hypertension.1
+ischemic$stroke <- factor(ischemic$stroke, levels = c(0,1),labels=c("No","Yes"))
+ischemic$stroke <- relevel(ischemic$stroke, ref="Yes")
+ischemic$hypertension <- factor(ischemic$hypertension, levels = c(0,1),labels=c("No","Yes"))
+ischemic$heartdisease <- factor(ischemic$heartdisease, levels = c(0,1),labels=c("No","Yes"))
+head(ischemic)
+
+
+#Checking data balance
+prop.table(table(ischemic$gender))
+
+#Looking for missing Values
+#Age
+age <- table(is.na(ischemic$age))
+age
+prop.table(age)
+
+#Hypertension
+hyper <- table(is.na(ischemic$hypertension))
+hyper
+prop.table(table(ischemic$hypertension))
+
+#heart disease
+h.dis <- table(is.na(ischemic$heartdisease))
+h.dis
+
+#Ever married
+married <- table(is.na(ischemic$evermarried))
+married
+
+#Work type
+table(ischemic$worktype)
+
+#Residence type
+r.type <- table(is.na(ischemic$Residencetype))
+r.type
+
+#Smoking status (factor with 4 leveles, 13292 null values)
+table(ischemic$smoking_status)
+#checking predictor levels
+levels(ischemic$smoking_status)
+#assigning new labels
+levels(ischemic$smoking_status) <- c("Declinedtoanswer", "FormerlySmoked","NeverSmoked", "smokes")
+
+#Glucose level
+is.na(ischemic$avg_glucose_level)
+
+#BmI (1462 missing values)
+table(is.na(ischemic$bmi))
+#########################################################################################################################################
+
+#Imputation using mice on bmi
+library(mice)
+ischemic.d.imp = mice(ischemic , seed =1)
+summary(ischemic.d.imp)
+isc.imp <-complete(ischemic.d.imp,1)
+table(is.na(isc.imp$bmi))
+str(isc.imp)
+
+#DUMMYCODING
+default.dmodel <- dummyVars(~ gender+age+hypertension+heart_disease+ever_married+work_type+Residence_type+avg_glucose_level+bmi+smoking_status, data=isc.imp, fullRank=T)
+isc.imp.d <- as.data.frame(predict(default.dmodel, isc.imp))
+isc.imp.d$stroke <- isc.imp$stroke #copy back DV
+str(isc.imp.d)
+head(isc.imp.d)
+
+#Near 0 variance
+#Calculate Near Zero Variance at 95%
+nzv <- nearZeroVar(isc.imp.d, saveMetrics=T)
+nzv
+isc.imp.d.tmp <- isc.imp.d$stroke
+ischemic.nzv <- isc.imp.d[,!nzv$nzv] #remove gender.Other, heartdisease.yes, worktype.NeverWorked
+ischemic.nzv$stroke <- isc.imp.d.tmp
+isc.imp.d <- ischemic.nzv
+str(isc.imp.d)
+
+#High correlated (correlation plot) - No need to remove
+library(corrplot)
+str(isc.imp.d)
+isc.imp.d.cor <- cor(isc.imp.d[,-14])
+corrplot(isc.imp.d.cor, order="hclust")
+isc.imp.d.cor
+findCorrelation(isc.imp.d.cor, cutoff=.7)
+str(isc.imp.d)
+
+
+#perform pca
+isc.pca <- prcomp(isc.imp.d, scale=TRUE)
+isc.pca$center
+isc.pca$scale
+
+#check loads
+isc.pca$rotation
+round(isc.pca$rotation,2)
+
+biplot(isc.imp.d, scale=0)
+
+#variance explained by each component, squaring standard deviation 
+pca.var<- isc.pca$sdev^2
+pve    <- pca.var/ sum(pca.var)
+pve
+
+#scree plot, variance explained by component
+plot(pve, xlab="PCA", ylab="Prop of Variance Explained", ylim=c(0,1), type='b')
+#cumulative variance explained by component 
+plot(cumsum(pve), xlab="PCA", ylab="Cumulative Prop of Variance Explained", ylim=c(0,1), type='b')
+
+#Grab the first 10 PCA
+#grabe the first five PCs, grab columns 1 to 5
+isc.pca$x[,1:10]
+
+#shorter version of summarizing variance
+summary(isc.pca)
+plot(isc.pca)
+##############################################################################################
+##############################KMEANS CLUSTERING###############################################
+
+set.seed(22)
+#k = 2 with 20 random initilizations, kmeans fucntions, it needs numerical values, nstart=20
+#try 20 different random starts
+isc.kmeans.2 <- kmeans(isc.imp.d, 2, nstart=20)
+isc.kmeans.2
+#note patients are assigned to cluster 1 or 2
+
+#seeking to reduce within sum of squares error
+isc.kmeans.2$tot.withinss
+
+#lets try k 3
+isc.kmeans.3 <- kmeans(isc.imp.d, 3, nstart=20)
+isc.kmeans.3$tot.withinss
+
+#Lets find the best k
+wss <- numeric(10) 
+for (k in 1:10) 
+{
+  clust <- kmeans(isc.imp.d, centers=k, nstart=25)
+  
+  wss[k] <- sum(clust$withinss)
+}
+
+#Plot the wss for the 10 cluster
+plot(1:10, wss, type="b", xlab="Number of Clusters", ylab="Within Sum of Squares") 
+
+
+#plot the clusters by first two PCAs to reduced dimensons, visualize 3 
+#cluster on 19 dimensions
+library(cluster)
+clusplot(isc.imp.d, isc.kmeans.3$cluster, color=TRUE, shade=TRUE,
+         labels=2, lines=0)
+#plot tells us a little, too busy
+
+##############################################################################################
+##############################HIERARCHICAL CLUSTERING#########################################
+
+#hierarchical clusters, scaling before calculating distance and clustering)
+isc.hc.complete <- hclust(dist(scale(isc.imp.d)), method="average")
+
+#Lets plot the results
+plot(isc.hc.complete)
+
+#select vertical cut to create clusters
+cutree(isc, 3) #4 ggroups, shows who is in what cluster 
+cutree(isc.hc.complete, h=10) #or by height
+
+
